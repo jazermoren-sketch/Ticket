@@ -1,0 +1,15 @@
+إعداد البوت على Quaxly
+
+1) ارفع جميع ملفات هذا الـZIP كما هي.
+2) من Environment Variables أضف:
+   Name: DISCORD_TOKEN
+   Value: توكن البوت
+3) Startup Command:
+   python bot.py
+4) ثبّت المكتبات من requirements.txt إذا لم يثبتها Quaxly تلقائياً.
+5) شغّل البوت مرة واحدة.
+
+مهم:
+- لا تضع التوكن داخل bot.py.
+- لا تشغّل نسختين من البوت بنفس التوكن.
+- Error 1015 من Discord/Cloudflare مرتبط بالـIP أو كثرة الطلبات، وليس بمكان حفظ التوكن.
