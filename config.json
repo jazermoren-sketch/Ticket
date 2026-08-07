@@ -1,0 +1,17 @@
+{
+  "ticket_category": null,
+  "staff_role": null,
+  "log_channel": null,
+  "xp_rewards": {
+    "claim": 10,
+    "close": 15,
+    "rating_multiplier": 2
+  },
+  "rank_requirements": {
+    "Trainee": 0,
+    "Helper": 100,
+    "Moderator": 300,
+    "Senior Moderator": 700,
+    "Manager": 1500
+  }
+}

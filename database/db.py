@@ -11,6 +11,7 @@ def connect():
     return conn
 
 def init_db():
+    from database.staff import create_staff_table
     conn = connect()
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS guild_config (
@@ -114,6 +115,20 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_shortcut_logs_ticket
         ON shortcut_logs (guild_id, channel_id, created_at);
 
+    CREATE TABLE IF NOT EXISTS ticket_ratings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        ticket_owner_id INTEGER NOT NULL,
+        staff_id INTEGER NOT NULL,
+        rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+        created_at INTEGER NOT NULL,
+        UNIQUE(channel_id, ticket_owner_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ticket_ratings_staff
+        ON ticket_ratings (guild_id, staff_id, created_at);
+
     CREATE TABLE IF NOT EXISTS tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER NOT NULL,
@@ -169,6 +184,7 @@ def init_db():
     conn.execute("UPDATE tickets SET last_activity_at = COALESCE(last_activity_at, created_at, ?)", (now,))
     conn.commit()
     conn.close()
+    create_staff_table()
 
 def get_guild_config(guild_id):
     conn = connect()
@@ -722,3 +738,30 @@ def get_shortcut_logs(guild_id, channel_id=None, limit=25):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def create_ticket_rating(guild_id, channel_id, ticket_owner_id, staff_id, rating):
+    now = int(time.time())
+    conn = connect()
+    try:
+        cur = conn.execute(
+            """INSERT INTO ticket_ratings
+               (guild_id, channel_id, ticket_owner_id, staff_id, rating, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (guild_id, channel_id, ticket_owner_id, staff_id, int(rating), now),
+        )
+        conn.commit()
+        rating_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        rating_id = None
+    conn.close()
+    return rating_id
+
+def get_ticket_rating(channel_id, ticket_owner_id=None):
+    conn = connect()
+    if ticket_owner_id is None:
+        row = conn.execute("SELECT * FROM ticket_ratings WHERE channel_id = ?", (channel_id,)).fetchone()
+    else:
+        row = conn.execute("SELECT * FROM ticket_ratings WHERE channel_id = ? AND ticket_owner_id = ?", (channel_id, ticket_owner_id)).fetchone()
+    conn.close()
+    return dict(row) if row else None

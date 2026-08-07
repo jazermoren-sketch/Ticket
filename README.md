@@ -73,3 +73,23 @@ python bot.py
 - أوامر جديدة:
   - `/staff-points` لعرض نقاط إداري.
   - `/staff-leaderboard` لعرض أفضل 10 إداريين.
+
+## ArabicTickets Ultimate
+
+ArabicTickets Ultimate now includes a professional staff foundation layered on top of the existing ticket system:
+
+- Staff profiles with XP, levels, ranks, claimed tickets, closed tickets, and received ratings.
+- Ticket-integrated XP rewards for claim, close, and rating events with anti-abuse protections.
+- Rank thresholds: Trainee, Helper, Moderator, Senior Moderator, and Manager.
+- `/staff profile`, `/staff stats`, `/staff leaderboard`, and `/staff dashboard` commands.
+- Advanced ticket analytics for resolution time, daily volume, active staff, and average rating.
+- One-time 1-5 star rating storage with owner/staff protection.
+- Advanced controls for transfer, category/team, priority, add/remove members, and auto-close.
+- Configurable logging and JSON-backed defaults in `config.json`.
+
+### Local checks
+
+```bash
+python -m compileall .
+python -m unittest discover -s tests
+```

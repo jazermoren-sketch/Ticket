@@ -8,6 +8,7 @@ from cogs.tickets import Tickets
 from cogs.staff_xp import StaffXP
 from cogs.staff_warnings import StaffWarnings
 from cogs.shortcuts import Shortcuts
+from cogs.staff import Staff
 
 load_dotenv()
 
@@ -33,6 +34,7 @@ class ArabicTickets(commands.Bot):
         await self.add_cog(StaffXP(self))
         await self.add_cog(StaffWarnings(self))
         await self.add_cog(Shortcuts(self))
+        await self.add_cog(Staff(self))
         synced = await self.tree.sync()
         print(f"تم تسجيل {len(synced)} أمر Slash.")
 
