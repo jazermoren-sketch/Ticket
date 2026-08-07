@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from database.db import init_db
 from cogs.tickets import Tickets
+from cogs.staff_xp import StaffXP
 
 load_dotenv()
 
@@ -27,6 +28,7 @@ class ArabicTickets(commands.Bot):
     async def setup_hook(self):
         init_db()
         await self.add_cog(Tickets(self))
+        await self.add_cog(StaffXP(self))
         synced = await self.tree.sync()
         print(f"تم تسجيل {len(synced)} أمر Slash.")
 

@@ -23,7 +23,10 @@ def init_db():
         auto_close_minutes INTEGER DEFAULT 0,
         sla_minutes INTEGER DEFAULT 0,
         promotion_channel_id INTEGER,
-        staff_points_channel_id INTEGER
+        staff_points_channel_id INTEGER,
+        staff_xp_messages_per_point INTEGER NOT NULL DEFAULT 30,
+        staff_xp_cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+        staff_xp_log_channel_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS staff_points (
@@ -32,6 +35,23 @@ def init_db():
         points INTEGER NOT NULL DEFAULT 0,
         tickets_claimed INTEGER NOT NULL DEFAULT 0,
         rating_points INTEGER NOT NULL DEFAULT 0,
+        message_points INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS staff_xp_roles (
+        guild_id INTEGER NOT NULL,
+        role_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, role_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS staff_messages (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        counted_messages INTEGER NOT NULL DEFAULT 0,
+        pending_messages INTEGER NOT NULL DEFAULT 0,
+        last_message_at INTEGER,
+        updated_at INTEGER NOT NULL,
         PRIMARY KEY (guild_id, user_id)
     );
 
@@ -68,9 +88,16 @@ def init_db():
         "sla_minutes": "INTEGER DEFAULT 0",
         "promotion_channel_id": "INTEGER",
         "staff_points_channel_id": "INTEGER",
+        "staff_xp_messages_per_point": "INTEGER NOT NULL DEFAULT 30",
+        "staff_xp_cooldown_seconds": "INTEGER NOT NULL DEFAULT 60",
+        "staff_xp_log_channel_id": "INTEGER",
     }.items():
         if name not in cfg_cols:
             conn.execute(f"ALTER TABLE guild_config ADD COLUMN {name} {definition}")
+
+    staff_points_cols = {r["name"] for r in conn.execute("PRAGMA table_info(staff_points)")}
+    if "message_points" not in staff_points_cols:
+        conn.execute("ALTER TABLE staff_points ADD COLUMN message_points INTEGER NOT NULL DEFAULT 0")
 
     ticket_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tickets)")}
     for name, definition in {
@@ -98,7 +125,9 @@ def set_guild_config(guild_id, **fields):
     allowed = {
         "category_id", "support_role_id", "archive_category_id",
         "transcript_channel_id", "log_channel_id", "auto_close_minutes",
-        "sla_minutes", "promotion_channel_id", "staff_points_channel_id"
+        "sla_minutes", "promotion_channel_id", "staff_points_channel_id",
+        "staff_xp_messages_per_point", "staff_xp_cooldown_seconds",
+        "staff_xp_log_channel_id"
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
@@ -190,8 +219,8 @@ def add_staff_points(guild_id, user_id, amount, source="ticket"):
     conn = connect()
     conn.execute(
         """INSERT INTO staff_points
-           (guild_id, user_id, points, tickets_claimed, rating_points)
-           VALUES (?, ?, 0, 0, 0)
+           (guild_id, user_id, points, tickets_claimed, rating_points, message_points)
+           VALUES (?, ?, 0, 0, 0, 0)
            ON CONFLICT(guild_id, user_id) DO NOTHING""",
         (guild_id, user_id),
     )
@@ -209,6 +238,14 @@ def add_staff_points(guild_id, user_id, amount, source="ticket"):
             """UPDATE staff_points
                SET points = points + ?,
                    rating_points = rating_points + ?
+               WHERE guild_id = ? AND user_id = ?""",
+            (amount, amount, guild_id, user_id),
+        )
+    elif source == "message":
+        conn.execute(
+            """UPDATE staff_points
+               SET points = points + ?,
+                   message_points = message_points + ?
                WHERE guild_id = ? AND user_id = ?""",
             (amount, amount, guild_id, user_id),
         )
@@ -242,6 +279,7 @@ def get_staff_points(guild_id, user_id):
             "points": 0,
             "tickets_claimed": 0,
             "rating_points": 0,
+            "message_points": 0,
         }
 
     return dict(row)
@@ -343,3 +381,102 @@ def get_member_effective_points(guild_id, user_id, role_ids):
         "base_points": base_points,
         "effective_points": base_points + earned_points,
     }
+
+
+# =========================
+# Staff XP حسب الرسائل
+# =========================
+
+def upsert_staff_xp_role(guild_id, role_id):
+    conn = connect()
+    conn.execute(
+        "INSERT OR IGNORE INTO staff_xp_roles (guild_id, role_id) VALUES (?, ?)",
+        (guild_id, role_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_staff_xp_role(guild_id, role_id):
+    conn = connect()
+    cur = conn.execute(
+        "DELETE FROM staff_xp_roles WHERE guild_id = ? AND role_id = ?",
+        (guild_id, role_id),
+    )
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
+def get_staff_xp_roles(guild_id):
+    conn = connect()
+    rows = conn.execute(
+        "SELECT role_id FROM staff_xp_roles WHERE guild_id = ? ORDER BY role_id ASC",
+        (guild_id,),
+    ).fetchall()
+    conn.close()
+    return [int(row["role_id"]) for row in rows]
+
+
+def add_staff_message(guild_id, user_id, messages_per_xp=30):
+    messages_per_xp = max(1, int(messages_per_xp))
+    now = int(time.time())
+    conn = connect()
+    conn.execute(
+        """INSERT INTO staff_messages
+           (guild_id, user_id, counted_messages, pending_messages, last_message_at, updated_at)
+           VALUES (?, ?, 0, 0, NULL, ?)
+           ON CONFLICT(guild_id, user_id) DO NOTHING""",
+        (guild_id, user_id, now),
+    )
+    conn.execute(
+        """UPDATE staff_messages
+           SET counted_messages = counted_messages + 1,
+               pending_messages = pending_messages + 1,
+               last_message_at = ?,
+               updated_at = ?
+           WHERE guild_id = ? AND user_id = ?""",
+        (now, now, guild_id, user_id),
+    )
+    row = conn.execute(
+        "SELECT * FROM staff_messages WHERE guild_id = ? AND user_id = ?",
+        (guild_id, user_id),
+    ).fetchone()
+    awarded = int(row["pending_messages"]) // messages_per_xp
+    if awarded:
+        remaining = int(row["pending_messages"]) % messages_per_xp
+        conn.execute(
+            """UPDATE staff_messages
+               SET pending_messages = ?, updated_at = ?
+               WHERE guild_id = ? AND user_id = ?""",
+            (remaining, now, guild_id, user_id),
+        )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM staff_messages WHERE guild_id = ? AND user_id = ?",
+        (guild_id, user_id),
+    ).fetchone()
+    conn.close()
+    data = dict(row)
+    data["awarded_points"] = awarded
+    return data
+
+
+def get_staff_message_stats(guild_id, user_id):
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM staff_messages WHERE guild_id = ? AND user_id = ?",
+        (guild_id, user_id),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "counted_messages": 0,
+            "pending_messages": 0,
+            "last_message_at": None,
+            "updated_at": 0,
+        }
+    return dict(row)
