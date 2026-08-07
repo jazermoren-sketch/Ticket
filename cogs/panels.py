@@ -3,14 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from database.db import get_guild_config
-from database.panels import (
-    create_panels_table,
-    create_panel,
-    get_panel,
-    get_panels,
-    update_panel,
-    delete_panel,
-)
+from database.panels import create_panels_table, create_panel, get_panel, get_panels, update_panel, delete_panel
 from ui.panel import CustomTicketPanelView, build_custom_panel_embed
 
 
@@ -18,17 +11,13 @@ class PanelCreateModal(discord.ui.Modal):
     def __init__(self, existing=None):
         self.existing = existing
         super().__init__(title='تخصيص Ticket Panel' if existing else 'إنشاء Ticket Panel')
-
         self.name_input = discord.ui.TextInput(label='اسم الـ Panel', default=(existing or {}).get('name', ''), max_length=80, required=True)
         self.emoji_input = discord.ui.TextInput(label='الإيموجي', default=(existing or {}).get('emoji', '🎫'), max_length=10, required=False)
         self.description_input = discord.ui.TextInput(label='الوصف (اختياري)', default=(existing or {}).get('description', ''), style=discord.TextStyle.paragraph, max_length=1000, required=False)
         self.title_input = discord.ui.TextInput(label='عنوان الـ Embed (اختياري)', default=(existing or {}).get('embed_title', ''), max_length=256, required=False)
         self.embed_description_input = discord.ui.TextInput(label='نص الـ Embed (اختياري)', default=(existing or {}).get('embed_description', ''), style=discord.TextStyle.paragraph, max_length=4000, required=False)
-        self.add_item(self.name_input)
-        self.add_item(self.emoji_input)
-        self.add_item(self.description_input)
-        self.add_item(self.title_input)
-        self.add_item(self.embed_description_input)
+        for item in (self.name_input, self.emoji_input, self.description_input, self.title_input, self.embed_description_input):
+            self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
         data = {
@@ -52,13 +41,7 @@ class PanelCreateModal(discord.ui.Modal):
                 support_role_id=config['support_role_id'] if config else None,
             )
             text = '✅ تم إنشاء الـ Panel.'
-
-        await interaction.response.send_message(
-            content=text,
-            embed=build_custom_panel_embed(panel),
-            view=CustomTicketPanelView(panel),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(content=text, embed=build_custom_panel_embed(panel), view=CustomTicketPanelView(panel), ephemeral=True)
 
 
 class PanelCog(commands.Cog):
@@ -129,10 +112,28 @@ class PanelCog(commands.Cog):
         await channel.send(embed=build_custom_panel_embed(panel), view=CustomTicketPanelView(panel))
         await interaction.response.send_message(f'✅ تم إرسال **{panel["name"]}** إلى {channel.mention}.', ephemeral=True)
 
-    @panel.command(name='configure', description='تخصيص Category وStaff Role وإعدادات الزر')
+    @panel.command(name='configure', description='تخصيص Category وStaff Role والزر والـ Embed')
     @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(panel_id='رقم الـ Panel', category='Category التي ستوضع فيها التذاكر', staff_role='Role الذي سيملك صلاحية التذاكر', button_label='اسم الزر (اختياري)', ticket_name='اسم التكت: {username} و {display_name} و {id}')
-    async def panel_configure(self, interaction: discord.Interaction, panel_id: int, category: discord.CategoryChannel | None = None, staff_role: discord.Role | None = None, button_label: str | None = None, ticket_name: str | None = None):
+    @app_commands.describe(
+        panel_id='رقم الـ Panel',
+        category='Category التي ستوضع فيها التذاكر',
+        staff_role='Role الذي سيملك صلاحية التذاكر',
+        button_label='اسم الزر (اختياري)',
+        ticket_name='اسم التكت: {username} و {display_name} و {id}',
+        embed_color='لون الـ Embed بصيغة HEX بدون #، مثال: 5865F2',
+        button_style='1=Primary، 2=Secondary، 3=Success، 4=Danger',
+    )
+    async def panel_configure(
+        self,
+        interaction: discord.Interaction,
+        panel_id: int,
+        category: discord.CategoryChannel | None = None,
+        staff_role: discord.Role | None = None,
+        button_label: str | None = None,
+        ticket_name: str | None = None,
+        embed_color: str | None = None,
+        button_style: app_commands.Range[int, 1, 4] | None = None,
+    ):
         panel = get_panel(panel_id)
         if not panel or panel['guild_id'] != interaction.guild.id:
             return await interaction.response.send_message('❌ الـ Panel غير موجود.', ephemeral=True)
@@ -145,5 +146,15 @@ class PanelCog(commands.Cog):
             changes['button_label'] = button_label[:80]
         if ticket_name is not None:
             changes['ticket_name'] = ticket_name[:90]
+        if embed_color is not None:
+            raw = embed_color.strip().removeprefix('#')
+            try:
+                if len(raw) != 6:
+                    raise ValueError
+                changes['embed_color'] = int(raw, 16)
+            except ValueError:
+                return await interaction.response.send_message('❌ لون HEX غير صالح. مثال: `5865F2`.', ephemeral=True)
+        if button_style is not None:
+            changes['button_style'] = int(button_style)
         panel = update_panel(panel_id, interaction.guild.id, **changes)
         await interaction.response.send_message(content='✅ تم تحديث إعدادات الـ Panel.', embed=build_custom_panel_embed(panel), view=CustomTicketPanelView(panel), ephemeral=True)
