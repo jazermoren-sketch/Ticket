@@ -41,7 +41,7 @@ class CustomTicketPanelButton(discord.ui.Button):
                 "❌ هاد الـ Panel ما بقاش متوفر.", ephemeral=True
             )
         await interaction.response.send_modal(
-            TicketForm(panel.get('ticket_type') or panel['name'])
+            TicketForm(panel.get('ticket_type') or panel['name'], panel_id=self.panel_id)
         )
 
 
@@ -68,6 +68,4 @@ def build_custom_panel_embed(panel):
     description = panel.get('embed_description') or panel.get('description') or ''
     color_value = int(panel.get('embed_color') or 5793266)
     embed = discord.Embed(title=title[:256], description=description[:4096], color=color_value)
-    if panel.get('name') and panel.get('description') and not panel.get('embed_description'):
-        embed.set_footer(text=panel['name'][:2048])
     return embed
