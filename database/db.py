@@ -26,7 +26,10 @@ def init_db():
         staff_points_channel_id INTEGER,
         staff_xp_messages_per_point INTEGER NOT NULL DEFAULT 30,
         staff_xp_cooldown_seconds INTEGER NOT NULL DEFAULT 60,
-        staff_xp_log_channel_id INTEGER
+        staff_xp_log_channel_id INTEGER,
+        staff_warning_log_channel_id INTEGER,
+        staff_warning_limit INTEGER NOT NULL DEFAULT 3,
+        staff_warning_punishment_role_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS staff_points (
@@ -62,6 +65,55 @@ def init_db():
         PRIMARY KEY (guild_id, role_id)
     );
 
+
+
+    CREATE TABLE IF NOT EXISTS staff_warnings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        moderator_id INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        removed_by INTEGER,
+        removed_reason TEXT,
+        removed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_staff_warnings_member
+        ON staff_warnings (guild_id, user_id, active, created_at);
+
+
+
+    CREATE TABLE IF NOT EXISTS shortcuts_settings (
+        guild_id INTEGER NOT NULL,
+        shortcut_name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        channel_id INTEGER,
+        allowed_roles TEXT,
+        message TEXT,
+        embed_color INTEGER NOT NULL DEFAULT 3447003,
+        cooldown INTEGER NOT NULL DEFAULT 30,
+        auto_close INTEGER NOT NULL DEFAULT 0,
+        reminder_minutes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, shortcut_name)
+    );
+
+    CREATE TABLE IF NOT EXISTS shortcut_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        ticket_id INTEGER,
+        user_id INTEGER NOT NULL,
+        shortcut_name TEXT NOT NULL,
+        action TEXT NOT NULL,
+        extra TEXT DEFAULT '',
+        created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shortcut_logs_ticket
+        ON shortcut_logs (guild_id, channel_id, created_at);
+
     CREATE TABLE IF NOT EXISTS tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER NOT NULL,
@@ -91,6 +143,9 @@ def init_db():
         "staff_xp_messages_per_point": "INTEGER NOT NULL DEFAULT 30",
         "staff_xp_cooldown_seconds": "INTEGER NOT NULL DEFAULT 60",
         "staff_xp_log_channel_id": "INTEGER",
+        "staff_warning_log_channel_id": "INTEGER",
+        "staff_warning_limit": "INTEGER NOT NULL DEFAULT 3",
+        "staff_warning_punishment_role_id": "INTEGER",
     }.items():
         if name not in cfg_cols:
             conn.execute(f"ALTER TABLE guild_config ADD COLUMN {name} {definition}")
@@ -127,7 +182,8 @@ def set_guild_config(guild_id, **fields):
         "transcript_channel_id", "log_channel_id", "auto_close_minutes",
         "sla_minutes", "promotion_channel_id", "staff_points_channel_id",
         "staff_xp_messages_per_point", "staff_xp_cooldown_seconds",
-        "staff_xp_log_channel_id"
+        "staff_xp_log_channel_id", "staff_warning_log_channel_id",
+        "staff_warning_limit", "staff_warning_punishment_role_id"
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
@@ -480,3 +536,189 @@ def get_staff_message_stats(guild_id, user_id):
             "updated_at": 0,
         }
     return dict(row)
+
+
+# =========================
+# نظام تحذيرات الإدارة
+# =========================
+
+def add_staff_warning(guild_id, user_id, moderator_id, reason):
+    now = int(time.time())
+    conn = connect()
+    cur = conn.execute(
+        """INSERT INTO staff_warnings
+           (guild_id, user_id, moderator_id, reason, active, created_at)
+           VALUES (?, ?, ?, ?, 1, ?)""",
+        (guild_id, user_id, moderator_id, str(reason).strip(), now),
+    )
+    active_count = conn.execute(
+        """SELECT COUNT(*) AS total FROM staff_warnings
+           WHERE guild_id = ? AND user_id = ? AND active = 1""",
+        (guild_id, user_id),
+    ).fetchone()["total"]
+    row = conn.execute(
+        "SELECT * FROM staff_warnings WHERE id = ? AND guild_id = ?",
+        (cur.lastrowid, guild_id),
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    data = dict(row)
+    data["active_count"] = int(active_count)
+    return data
+
+
+def delete_staff_warning(guild_id, warning_id, removed_by, removed_reason="تم حذف التحذير"):
+    now = int(time.time())
+    conn = connect()
+    cur = conn.execute(
+        """UPDATE staff_warnings
+           SET active = 0, removed_by = ?, removed_reason = ?, removed_at = ?
+           WHERE guild_id = ? AND id = ? AND active = 1""",
+        (removed_by, str(removed_reason).strip(), now, guild_id, warning_id),
+    )
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
+def get_staff_warning(guild_id, warning_id):
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM staff_warnings WHERE guild_id = ? AND id = ?",
+        (guild_id, warning_id),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_staff_warnings(guild_id, user_id, include_inactive=False, limit=25):
+    query = "SELECT * FROM staff_warnings WHERE guild_id = ? AND user_id = ?"
+    params = [guild_id, user_id]
+    if not include_inactive:
+        query += " AND active = 1"
+    query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    params.append(int(limit))
+    conn = connect()
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def count_active_staff_warnings(guild_id, user_id):
+    conn = connect()
+    row = conn.execute(
+        """SELECT COUNT(*) AS total FROM staff_warnings
+           WHERE guild_id = ? AND user_id = ? AND active = 1""",
+        (guild_id, user_id),
+    ).fetchone()
+    conn.close()
+    return int(row["total"] if row else 0)
+
+
+# =========================
+# نظام اختصارات التذاكر
+# =========================
+
+SHORTCUT_DEFAULT_COLORS = {
+    "done": 0x2ECC71,
+    "idle": 0xF1C40F,
+    "need_staff": 0xE67E22,
+    "welcome": 0x3498DB,
+}
+
+
+def _default_shortcut_setting(guild_id, shortcut_name):
+    return {
+        "guild_id": guild_id,
+        "shortcut_name": shortcut_name,
+        "enabled": 1,
+        "channel_id": None,
+        "allowed_roles": None,
+        "message": None,
+        "embed_color": SHORTCUT_DEFAULT_COLORS.get(shortcut_name, 0x3498DB),
+        "cooldown": 30,
+        "auto_close": 0,
+        "reminder_minutes": 0,
+    }
+
+
+def get_shortcut_setting(guild_id, shortcut_name):
+    conn = connect()
+    row = conn.execute(
+        """SELECT * FROM shortcuts_settings
+           WHERE guild_id = ? AND shortcut_name = ?""",
+        (guild_id, shortcut_name),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else _default_shortcut_setting(guild_id, shortcut_name)
+
+
+def update_shortcut_setting(guild_id, shortcut_name, **fields):
+    allowed = {
+        "enabled", "channel_id", "allowed_roles", "message",
+        "embed_color", "cooldown", "auto_close", "reminder_minutes",
+    }
+    fields = {key: value for key, value in fields.items() if key in allowed}
+    current = get_shortcut_setting(guild_id, shortcut_name)
+    current.update(fields)
+    conn = connect()
+    conn.execute(
+        """INSERT INTO shortcuts_settings
+           (guild_id, shortcut_name, enabled, channel_id, allowed_roles, message,
+            embed_color, cooldown, auto_close, reminder_minutes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(guild_id, shortcut_name) DO UPDATE SET
+             enabled = excluded.enabled,
+             channel_id = excluded.channel_id,
+             allowed_roles = excluded.allowed_roles,
+             message = excluded.message,
+             embed_color = excluded.embed_color,
+             cooldown = excluded.cooldown,
+             auto_close = excluded.auto_close,
+             reminder_minutes = excluded.reminder_minutes""",
+        (
+            guild_id,
+            shortcut_name,
+            int(current["enabled"]),
+            current["channel_id"],
+            current["allowed_roles"],
+            current["message"],
+            int(current["embed_color"]),
+            int(current["cooldown"]),
+            int(current["auto_close"]),
+            int(current["reminder_minutes"]),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return get_shortcut_setting(guild_id, shortcut_name)
+
+
+def add_shortcut_log(guild_id, channel_id, ticket_id, user_id, shortcut_name, action, extra=""):
+    now = int(time.time())
+    conn = connect()
+    cur = conn.execute(
+        """INSERT INTO shortcut_logs
+           (guild_id, channel_id, ticket_id, user_id, shortcut_name, action, extra, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (guild_id, channel_id, ticket_id, user_id, shortcut_name, action, str(extra or ""), now),
+    )
+    conn.commit()
+    log_id = cur.lastrowid
+    conn.close()
+    return log_id
+
+
+def get_shortcut_logs(guild_id, channel_id=None, limit=25):
+    query = "SELECT * FROM shortcut_logs WHERE guild_id = ?"
+    params = [guild_id]
+    if channel_id is not None:
+        query += " AND channel_id = ?"
+        params.append(channel_id)
+    query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    params.append(int(limit))
+    conn = connect()
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
