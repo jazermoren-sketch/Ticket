@@ -36,7 +36,9 @@ class ArabicTickets(commands.Bot):
         await self.add_cog(StaffWarnings(self))
         await self.add_cog(Shortcuts(self))
         await self.add_cog(Staff(self))
-        await self.add_cog(PanelCog(self))
+        panel_cog = PanelCog(self)
+        await self.add_cog(panel_cog)
+        await panel_cog.register_persistent_views()
         synced = await self.tree.sync()
         print(f"تم تسجيل {len(synced)} أمر Slash.")
 
