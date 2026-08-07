@@ -17,6 +17,7 @@ from ui.ticket import TicketControlView, ReopenView
 from utils.embeds import success_embed, error_embed, info_embed
 from utils.transcript import create_transcript
 from utils.advanced import priority_label, format_tags
+from utils.analytics import ticket_analytics
 
 class Tickets(commands.Cog):
     def __init__(self, bot):
@@ -609,6 +610,26 @@ class Tickets(commands.Cog):
         update_ticket(interaction.channel.id, team=team)
         await interaction.response.send_message(embed=success_embed("تم تعيين الفريق", f"الفريق: `{team}`"))
 
+
+    @app_commands.command(name="transfer-ticket", description="نقل استلام التذكرة إلى موظف آخر")
+    async def transfer_ticket(self, interaction, member: discord.Member):
+        ticket = get_ticket_by_channel(interaction.channel.id)
+        if not ticket or not interaction.user.guild_permissions.manage_channels:
+            return await interaction.response.send_message(embed=error_embed("لا يمكنك استخدام هذا الأمر هنا."), ephemeral=True)
+        if member.id == ticket["user_id"]:
+            return await interaction.response.send_message(embed=error_embed("لا يمكن تحويل التذكرة إلى صاحبها."), ephemeral=True)
+        update_ticket(interaction.channel.id, claimed_by=member.id, last_activity_at=int(time.time()))
+        await interaction.channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
+        await interaction.response.send_message(embed=success_embed("تم تحويل التذكرة", f"تم تحويل الاستلام إلى {member.mention}."))
+
+    @app_commands.command(name="ticket-category", description="تحديث تصنيف/فريق التذكرة")
+    async def ticket_category(self, interaction, category: str):
+        ticket = get_ticket_by_channel(interaction.channel.id, include_closed=True)
+        if not ticket or not interaction.user.guild_permissions.manage_channels:
+            return await interaction.response.send_message(embed=error_embed("لا يمكنك استخدام هذا الأمر هنا."), ephemeral=True)
+        update_ticket(interaction.channel.id, team=category, last_activity_at=int(time.time()))
+        await interaction.response.send_message(embed=success_embed("تم تحديث التصنيف", f"التصنيف: `{category}`"))
+
     @app_commands.command(name="add-member", description="إضافة عضو إلى التذكرة")
     async def add_member(self, interaction, member: discord.Member):
         ticket = get_ticket_by_channel(interaction.channel.id)
@@ -629,11 +650,18 @@ class Tickets(commands.Cog):
 
     @app_commands.command(name="stats", description="إحصائيات التذاكر")
     async def stats(self, interaction):
+        data = ticket_analytics(interaction.guild.id)
+        active = data["most_active_staff"]
+        active_text = f"<@{active['user_id']}> — {active['total']} تذكرة" if active else "لا توجد بيانات"
+        avg_minutes = data["average_resolution_seconds"] // 60
+        daily = "\n".join(f"• {row['day']}: **{row['total']}**" for row in data["daily_ticket_counts"][:7]) or "لا توجد بيانات"
         await interaction.response.send_message(
             embed=info_embed(
-                "إحصائيات المرحلة الرابعة",
-                "📊 النظام يدعم الآن Priority وTags وTeams وSLA وAuto Close.\n"
-                "سيتم توسيع Analytics التفصيلية في المرحلة الخامسة.",
+                "📊 Advanced Ticket Analytics",
+                f"⏱️ متوسط وقت الحل: **{avg_minutes} دقيقة**\n"
+                f"👑 أكثر موظف نشاطاً: {active_text}\n"
+                f"⭐ معدل التقييم: **{data['average_rating']}/5**\n\n"
+                f"📅 التذاكر اليومية:\n{daily}",
             ),
             ephemeral=True,
         )

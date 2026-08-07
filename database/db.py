@@ -11,6 +11,7 @@ def connect():
     return conn
 
 def init_db():
+    from database.staff import create_staff_table
     conn = connect()
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS guild_config (
@@ -29,7 +30,8 @@ def init_db():
         staff_xp_log_channel_id INTEGER,
         staff_warning_log_channel_id INTEGER,
         staff_warning_limit INTEGER NOT NULL DEFAULT 3,
-        staff_warning_punishment_role_id INTEGER
+        staff_warning_punishment_role_id INTEGER,
+        staff_xp_multiplier INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS staff_points (
@@ -114,6 +116,20 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_shortcut_logs_ticket
         ON shortcut_logs (guild_id, channel_id, created_at);
 
+    CREATE TABLE IF NOT EXISTS ticket_ratings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        ticket_owner_id INTEGER NOT NULL,
+        staff_id INTEGER NOT NULL,
+        rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+        created_at INTEGER NOT NULL,
+        UNIQUE(channel_id, ticket_owner_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ticket_ratings_staff
+        ON ticket_ratings (guild_id, staff_id, created_at);
+
     CREATE TABLE IF NOT EXISTS tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER NOT NULL,
@@ -146,6 +162,7 @@ def init_db():
         "staff_warning_log_channel_id": "INTEGER",
         "staff_warning_limit": "INTEGER NOT NULL DEFAULT 3",
         "staff_warning_punishment_role_id": "INTEGER",
+        "staff_xp_multiplier": "INTEGER NOT NULL DEFAULT 1",
     }.items():
         if name not in cfg_cols:
             conn.execute(f"ALTER TABLE guild_config ADD COLUMN {name} {definition}")
@@ -169,6 +186,7 @@ def init_db():
     conn.execute("UPDATE tickets SET last_activity_at = COALESCE(last_activity_at, created_at, ?)", (now,))
     conn.commit()
     conn.close()
+    create_staff_table()
 
 def get_guild_config(guild_id):
     conn = connect()
@@ -183,7 +201,8 @@ def set_guild_config(guild_id, **fields):
         "sla_minutes", "promotion_channel_id", "staff_points_channel_id",
         "staff_xp_messages_per_point", "staff_xp_cooldown_seconds",
         "staff_xp_log_channel_id", "staff_warning_log_channel_id",
-        "staff_warning_limit", "staff_warning_punishment_role_id"
+        "staff_warning_limit", "staff_warning_punishment_role_id",
+        "staff_xp_multiplier"
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
@@ -202,6 +221,37 @@ def set_guild_config(guild_id, **fields):
         )
     conn.commit()
     conn.close()
+
+
+def normalize_staff_xp_multiplier(multiplier):
+    multiplier = int(multiplier)
+    if multiplier == 0:
+        return 1
+    if multiplier < 0:
+        raise ValueError("Staff XP multiplier cannot be negative")
+    if multiplier > 10:
+        raise ValueError("Staff XP multiplier cannot be greater than 10")
+    return multiplier
+
+def get_staff_xp_multiplier(guild_id):
+    config = get_guild_config(guild_id)
+    if not config or "staff_xp_multiplier" not in config.keys() or config["staff_xp_multiplier"] is None:
+        return 1
+    try:
+        return normalize_staff_xp_multiplier(config["staff_xp_multiplier"])
+    except ValueError:
+        return 1
+
+def set_staff_xp_multiplier(guild_id, multiplier):
+    multiplier = normalize_staff_xp_multiplier(multiplier)
+    set_guild_config(guild_id, staff_xp_multiplier=multiplier)
+    return multiplier
+
+def apply_staff_xp_multiplier(guild_id, amount):
+    amount = int(amount)
+    if amount <= 0:
+        return amount
+    return amount * get_staff_xp_multiplier(guild_id)
 
 def create_ticket(guild_id, channel_id, user_id, ticket_type):
     now = int(time.time())
@@ -266,9 +316,11 @@ def get_open_tickets_for_autoclose(guild_id, minutes):
 # نظام نقاط الإدارة
 # =========================
 
-def add_staff_points(guild_id, user_id, amount, source="ticket"):
+def add_staff_points(guild_id, user_id, amount, source="ticket", apply_multiplier=True):
     """إضافة نقاط للإداري مع حفظ إحصائيات المصدر."""
     amount = int(amount)
+    if apply_multiplier:
+        amount = apply_staff_xp_multiplier(guild_id, amount)
     if amount <= 0:
         return get_staff_points(guild_id, user_id)
 
@@ -722,3 +774,30 @@ def get_shortcut_logs(guild_id, channel_id=None, limit=25):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def create_ticket_rating(guild_id, channel_id, ticket_owner_id, staff_id, rating):
+    now = int(time.time())
+    conn = connect()
+    try:
+        cur = conn.execute(
+            """INSERT INTO ticket_ratings
+               (guild_id, channel_id, ticket_owner_id, staff_id, rating, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (guild_id, channel_id, ticket_owner_id, staff_id, int(rating), now),
+        )
+        conn.commit()
+        rating_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        rating_id = None
+    conn.close()
+    return rating_id
+
+def get_ticket_rating(channel_id, ticket_owner_id=None):
+    conn = connect()
+    if ticket_owner_id is None:
+        row = conn.execute("SELECT * FROM ticket_ratings WHERE channel_id = ?", (channel_id,)).fetchone()
+    else:
+        row = conn.execute("SELECT * FROM ticket_ratings WHERE channel_id = ? AND ticket_owner_id = ?", (channel_id, ticket_owner_id)).fetchone()
+    conn.close()
+    return dict(row) if row else None

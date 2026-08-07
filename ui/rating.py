@@ -4,8 +4,13 @@ from database.db import (
     get_ticket_by_channel,
     update_ticket,
     add_staff_points,
+    create_ticket_rating,
+    get_ticket_rating,
 )
+from database.staff import add_staff_xp, update_staff_stat
 from utils.embeds import success_embed, error_embed
+from utils.logger import log_event
+from utils.config import get_xp_reward
 
 
 class RatingView(discord.ui.View):
@@ -56,20 +61,40 @@ class RatingView(discord.ui.View):
                 ephemeral=True,
             )
 
+        if interaction.user.id == ticket["claimed_by"]:
+            return await interaction.response.send_message(
+                embed=error_embed("❌ لا يمكن للموظف تقييم نفسه أو تذكرته."),
+                ephemeral=True,
+            )
+
         # منع التقييم أكثر من مرة.
+        if get_ticket_rating(self.channel_id, ticket["user_id"]):
+            return await interaction.response.send_message(
+                embed=error_embed("تم تقييم هذه التذكرة مسبقاً."),
+                ephemeral=True,
+            )
+
         if ticket["rating"] is not None:
             return await interaction.response.send_message(
                 embed=error_embed("تم تقييم هذه التذكرة مسبقاً."),
                 ephemeral=True,
             )
 
+        rating_id = create_ticket_rating(interaction.guild.id, self.channel_id, ticket["user_id"], ticket["claimed_by"], rating)
+        if rating_id is None:
+            return await interaction.response.send_message(
+                embed=error_embed("تم تقييم هذه التذكرة مسبقاً."),
+                ephemeral=True,
+            )
         update_ticket(self.channel_id, rating=rating)
 
         # عدد النجوم = عدد النقاط التي يحصل عليها الإداري المستلم.
         awarded = 0
         total_points = None
 
-        if ticket["claimed_by"]:
+        if ticket["claimed_by"] and ticket["claimed_by"] != interaction.user.id:
+            add_staff_xp(ticket["claimed_by"], rating * get_xp_reward("rating_multiplier", 2), guild_id=interaction.guild.id)
+            update_staff_stat(ticket["claimed_by"], "ratings_received")
             stats = add_staff_points(
                 interaction.guild.id,
                 ticket["claimed_by"],
@@ -86,6 +111,8 @@ class RatingView(discord.ui.View):
                     staff_member,
                     stats["points"],
                 )
+
+        await log_event(interaction.guild, "⭐ Ticket Rating", f"{interaction.user.mention} قيّم <#{self.channel_id}> بـ {rating}/5.", color=discord.Color.gold())
 
         for child in self.children:
             child.disabled = True

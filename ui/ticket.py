@@ -3,9 +3,12 @@ import time
 import discord
 
 from database.db import get_ticket_by_channel, update_ticket, get_guild_config, add_staff_points
+from database.staff import add_staff_xp, update_staff_stat
 from utils.embeds import error_embed, success_embed
 from utils.transcript import create_transcript
 from ui.rating import RatingView
+from utils.logger import log_event
+from utils.config import get_xp_reward
 
 class CloseReasonModal(discord.ui.Modal, title="🔒 إغلاق التذكرة"):
     reason = discord.ui.TextInput(
@@ -24,7 +27,7 @@ class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="استلام", emoji="👨‍💼", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="استلام التذكرة", emoji="👨‍💼", style=discord.ButtonStyle.primary)
     async def claim(self, interaction, button):
         ticket = get_ticket_by_channel(interaction.channel.id)
         if not ticket:
@@ -43,6 +46,8 @@ class TicketControlView(discord.ui.View):
         update_ticket(interaction.channel.id, claimed_by=interaction.user.id)
 
         # +10 نقاط عند استلام التذكرة. لا يمكن تكرارها لأن التذكرة تصبح مستلمة.
+        add_staff_xp(interaction.user.id, get_xp_reward("claim", 10), guild_id=interaction.guild.id)
+        update_staff_stat(interaction.user.id, "tickets_claimed")
         stats = add_staff_points(
             interaction.guild.id,
             interaction.user.id,
@@ -56,6 +61,8 @@ class TicketControlView(discord.ui.View):
                 interaction.user,
                 stats["points"],
             )
+
+        await log_event(interaction.guild, "🎫 Ticket Claimed", f"{interaction.user.mention} استلم {interaction.channel.mention}.")
 
         await interaction.response.send_message(
             embed=success_embed(
@@ -104,6 +111,11 @@ class TicketControlView(discord.ui.View):
         config = get_guild_config(interaction.guild.id)
         update_ticket(interaction.channel.id, status="closed", closed_at=int(time.time()), close_reason=reason)
 
+        closer_gets_xp = interaction.user.id != ticket["user_id"] and interaction.user.guild_permissions.manage_channels
+        if closer_gets_xp:
+            add_staff_xp(interaction.user.id, get_xp_reward("close", 15), guild_id=interaction.guild.id)
+            update_staff_stat(interaction.user.id, "tickets_closed")
+
         transcript_file = discord.File(
             __import__("io").BytesIO(transcript.encode("utf-8")),
             filename=f"{interaction.channel.name}-transcript.html",
@@ -117,6 +129,8 @@ class TicketControlView(discord.ui.View):
             )
 
         archive_category = interaction.guild.get_channel(config["archive_category_id"]) if config and config["archive_category_id"] else None
+
+        await log_event(interaction.guild, "🔒 Ticket Closed", f"{interaction.user.mention} أغلق {interaction.channel.mention}.\nالسبب: {reason}", color=discord.Color.red())
 
         await interaction.followup.send(
             embed=success_embed("تم إغلاق التذكرة", f"السبب: {reason}\nتم نقل التذكرة إلى الأرشيف."),
